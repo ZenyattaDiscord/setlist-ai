@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException
 from sqlmodel import SQLModel, create_engine, Session, select
 from dotenv import load_dotenv
 from backend.models import Track
-from backend.spotify_client import make_spotify, get_playlist_tracks, get_audio_features,make_spotify_client_credentials
+from backend.spotify_client import make_spotify, get_playlist_tracks, get_audio_features,make_spotify_client_credentials, get_current_user_json
 from backend.analysis import upsert_tracks
 from backend.set_builder import compile_set
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,50 +54,23 @@ def on_startup():
 
 @app.get("/health")
 def health():
-    return {"ok": True}
-
-# For endpoints that need user data (profile, private playlists)
-@app.get("/auth/me")
-def auth_me():
-    try:
-        sp = make_spotify()  # OAuth flow
-        me = sp.current_user()
-        return {"id": me["id"], "display_name": me.get("display_name")}
-    except Exception as e:
-        error_details = str(e)
-        print(f"Spotify auth error details: {error_details}")
-        # Check the specific error
-        if "authentication" in error_details.lower():
-            print("Authentication error detected")
-        return {"error": error_details, "type": type(e).__name__}
+    return get_current_user_json()
 
 # For endpoints that only need public data
 @app.post("/import/{playlist_id}")
 def import_playlist(playlist_id: str):
     try:
-        # If only public playlists:
         sp = make_spotify_client_credentials()
-        
-        # Validate the ID shape to catch pasted URLs early
+        # Basic validation to discourage passing a full URL
         if playlist_id.startswith("http"):
-            raise HTTPException(status_code=400, detail="Pass only the playlist ID, not the full URL.")
+            raise HTTPException(status_code=400, detail="Pass only the playlist ID (not the full URL).")
 
         raw_tracks = get_playlist_tracks(sp, playlist_id)
         if not raw_tracks:
             raise HTTPException(status_code=404, detail="No tracks found (check playlist visibility or ID).")
 
-        ids = [t["id"] for t in raw_tracks if t.get("id")]
-        feats = get_audio_features(sp, ids)
-        by_id = {f["id"]: f for f in feats if f}
-
-        with Session(engine) as s:
-            try:
-                stored = upsert_tracks(s, raw_tracks, by_id)
-                return {"imported": len(stored)}
-            except UnicodeEncodeError as ue:
-                print(f"Unicode error in track data: {ue}")
-                # Handle the encoding error more gracefully
-                raise HTTPException(status_code=500, detail="Track contains special characters that couldn't be processed")
+        # Return raw Spotify track objects (trim if needed later)
+        return {"count": len(raw_tracks), "tracks": raw_tracks}
     except HTTPException:
         raise
     except Exception as e:
@@ -122,7 +95,8 @@ def build_set(playlist_id: str, minutes: int = 60, profile: str = "peak"):
 @app.get("/spotify-test")
 def spotify_test():
     try:
-        sp = make_spotify()
-        return {"status": "Spotify client created successfully"}
+        sp = make_spotify_client_credentials()
+        print(sp.current_user())
+        return 
     except Exception as e:
         return {"error": str(e)}

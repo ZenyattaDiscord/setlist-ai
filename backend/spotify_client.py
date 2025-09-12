@@ -13,10 +13,14 @@ def make_spotify():
 
 def make_spotify_client_credentials():
     # For non-user operations (public playlists, etc)
-    return spotipy.Spotify(auth_manager=spotipy.SpotifyClientCredentials(
-        client_id=os.getenv("SPOTIFY_CLIENT_ID"),
-        client_secret=os.getenv("SPOTIFY_CLIENT_SECRET")
-    ))
+    try:
+        return spotipy.Spotify(auth_manager=spotipy.SpotifyClientCredentials(
+            client_id=os.getenv("SPOTIFY_CLIENT_ID"),
+            client_secret=os.getenv("SPOTIFY_CLIENT_SECRET")
+        ))
+    except Exception as e:
+        print(f"Error creating Spotify client: {e}")
+        return None
 
 def get_playlist_tracks(sp, playlist_id: str):
     items = []
@@ -35,3 +39,12 @@ def get_audio_features(sp, track_ids: list[str]):
     for i in range(0, len(track_ids), 100):
         feats.extend(sp.audio_features(track_ids[i:i+100]))
     return feats
+
+def get_current_user_json() -> dict:
+    """Return the raw JSON (dict) from Spotify's current_user() endpoint.
+
+    Uses the user-auth (OAuth) flow client. Any authentication/authorization
+    errors will propagate so the caller can handle them (e.g., FastAPI route
+    catching and returning a 401/400 response)."""
+    sp = make_spotify()
+    return sp.current_user()
