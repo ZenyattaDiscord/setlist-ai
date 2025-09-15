@@ -7,11 +7,13 @@ if sys.platform.startswith('win'):
     sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
     sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from sqlmodel import SQLModel, create_engine, Session, select
 from dotenv import load_dotenv
 from backend.models import Track
-from backend.spotify_client import make_spotify, get_playlist_tracks, get_audio_features,make_spotify_client_credentials, get_current_user_json
+from backend.spotify_client import get_audio_analysis, make_spotify, get_playlist_tracks, make_spotify_client_credentials, get_current_user_json
+from backend.spotify_client import get_authorize_url, exchange_code_for_token
+from backend.spotify_client import extract_track_ids
 from backend.analysis import upsert_tracks
 from backend.set_builder import compile_set
 from fastapi.middleware.cors import CORSMiddleware
@@ -60,8 +62,7 @@ def health():
 @app.post("/import/{playlist_id}")
 def import_playlist(playlist_id: str):
     try:
-        sp = make_spotify_client_credentials()
-        # Basic validation to discourage passing a full URL
+        sp = make_spotify()
         if playlist_id.startswith("http"):
             raise HTTPException(status_code=400, detail="Pass only the playlist ID (not the full URL).")
 
@@ -69,8 +70,15 @@ def import_playlist(playlist_id: str):
         if not raw_tracks:
             raise HTTPException(status_code=404, detail="No tracks found (check playlist visibility or ID).")
 
-        # Return raw Spotify track objects (trim if needed later)
-        return {"count": len(raw_tracks), "tracks": raw_tracks}
+        track_ids = extract_track_ids(raw_tracks)
+        analyzed_tracks = get_audio_analysis(sp, track_ids)
+
+        return {
+            "count": len(raw_tracks),
+            "track_id_count": len(track_ids),
+            "analyzed_count": len(analyzed_tracks),
+            "analyzed_sample": analyzed_tracks[:5]
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -92,11 +100,29 @@ def build_set(playlist_id: str, minutes: int = 60, profile: str = "peak"):
         setlist = compile_set(tracks, minutes=minutes, energy_curve=curve_map.get(profile, curve_map["peak"]))
         return {"count": len(setlist), "set": setlist}
 
+@app.get("/auth/login")
+def auth_login():
+    url = get_authorize_url()
+    return {"authorize_url": url}
+
+@app.get("/auth/callback")
+def auth_callback(code: str, state: str | None = None):
+    try:
+        token_info = exchange_code_for_token(code)
+        # token_info should include refresh_token and scope when auth code flow succeeds
+        return {
+            "ok": True,
+            "scope": token_info.get("scope"),
+            "expires_at": token_info.get("expires_at"),
+            "has_refresh_token": bool(token_info.get("refresh_token"))
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Auth callback failed: {e}")
+
 @app.get("/spotify-test")
 def spotify_test():
     try:
-        sp = make_spotify_client_credentials()
-        print(sp.current_user())
-        return 
+        sp = make_spotify()  # use user-auth, not client credentials
+        return sp.current_user()
     except Exception as e:
         return {"error": str(e)}
